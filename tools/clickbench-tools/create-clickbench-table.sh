@@ -92,7 +92,8 @@ echo "PASSWORD: $PASSWORD"
 echo "DB: $DB"
 
 mysql -h$FE_HOST -u$USER -P$FE_QUERY_PORT -e "CREATE DATABASE IF NOT EXISTS $DB"
+mysql -h$FE_HOST -u$USER -P$FE_QUERY_PORT -D$DB -e "drop table if exists hits force;"
 mysql -h$FE_HOST -u$USER -P$FE_QUERY_PORT -D$DB <$CURDIR/sql/create-clickbench-table.sql
-mysql -h$FE_HOST -u$USER -P$FE_QUERY_PORT -D$DB -e "show create table hits;"
+# mysql -h$FE_HOST -u$USER -P$FE_QUERY_PORT -D$DB -e "show create table hits;"
 
 echo "DONE."
