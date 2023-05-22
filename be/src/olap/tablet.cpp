@@ -2958,7 +2958,7 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
     if (config::enable_vmiter) {
         RETURN_IF_ERROR(calc_delete_bitmap_between_segments(rowset, segments, delete_bitmap, cur_version - 1));
     } else {
-        RETURN_IF_ERROR(calc_delete_bitmap(rowset, segments, &cur_rowset_ids, delete_bitmap,
+        RETURN_IF_ERROR(calc_delete_bitmap_between_segments_without_VMIterator(rowset, segments, &cur_rowset_ids, delete_bitmap,
                                            cur_version - 1));
     }
     for (auto iter = delete_bitmap->delete_bitmap.begin();
@@ -3220,7 +3220,99 @@ Status Tablet::calc_delete_bitmap_between_segments(RowsetSharedPtr rowset,
         }
         return Status::InternalError("failed to calculate delete bitmap between segments");
     }
-    LOG(INFO) << "calculate delete bitmap betweens segments in " << watch.get_elapse_time_us() << " us";
+    LOG(INFO) << "calculate delete bitmap between segments with VMIter in " << watch.get_elapse_time_us() << " us";
+    return Status::OK();
+}
+
+// caller should hold meta_lock
+Status Tablet::calc_delete_bitmap_between_segments_without_VMIterator(RowsetSharedPtr rowset,
+                                  const std::vector<segment_v2::SegmentSharedPtr>& segments,
+                                  const RowsetIdUnorderedSet* specified_rowset_ids,
+                                  DeleteBitmapPtr delete_bitmap, int64_t end_version,
+                                  RowsetWriter* rowset_writer) {
+    std::vector<segment_v2::SegmentSharedPtr> pre_segments;
+    OlapStopWatch watch;
+
+    Version dummy_version(end_version + 1, end_version + 1);
+    auto rowset_id = rowset->rowset_id();
+    auto rowset_schema = rowset->tablet_schema();
+    // use for partial update
+    PartialUpdateReadPlan read_plan_ori;
+    PartialUpdateReadPlan read_plan_update;
+
+    std::map<RowsetId, RowsetSharedPtr> rsid_to_rowset;
+    rsid_to_rowset[rowset_id] = rowset;
+    vectorized::Block block = rowset_schema->create_block();
+    vectorized::Block ordered_block = block.clone_empty();
+    uint32_t pos = 0;
+
+    for (auto& seg : segments) {
+        seg->load_pk_index_and_bf(); // We need index blocks to iterate
+        auto pk_idx = seg->get_primary_key_index();
+        int total = pk_idx->num_rows();
+        uint32_t row_id = 0;
+        int32_t remaining = total;
+        bool exact_match = false;
+        std::string last_key;
+        int batch_size = 1024;
+        while (remaining > 0) {
+            std::unique_ptr<segment_v2::IndexedColumnIterator> iter;
+            RETURN_IF_ERROR(pk_idx->new_iterator(&iter));
+
+            size_t num_to_read = std::min(batch_size, remaining);
+            auto index_type = vectorized::DataTypeFactory::instance().create_data_type(
+                    pk_idx->type_info()->type(), 1, 0);
+            auto index_column = index_type->create_column();
+            Slice last_key_slice(last_key);
+            RETURN_IF_ERROR(iter->seek_at_or_after(&last_key_slice, &exact_match));
+            auto current_ordinal = iter->get_current_ordinal();
+            DCHECK(total == remaining + current_ordinal)
+                    << "total: " << total << ", remaining: " << remaining
+                    << ", current_ordinal: " << current_ordinal;
+
+            size_t num_read = num_to_read;
+            RETURN_IF_ERROR(iter->next_batch(&num_read, index_column));
+            DCHECK(num_to_read == num_read)
+                    << "num_to_read: " << num_to_read << ", num_read: " << num_read;
+            last_key = index_column->get_data_at(num_read - 1).to_string();
+
+            // exclude last_key, last_key will be read in next batch.
+            if (num_read == batch_size && num_read != remaining) {
+                num_read -= 1;
+            }
+            for (size_t i = 0; i < num_read; i++) {
+                Slice key =
+                        Slice(index_column->get_data_at(i).data, index_column->get_data_at(i).size);
+                RowLocation loc;
+                // first check if exist in pre segment
+                // same rowset can ignore partial update, every load must update same columns
+                // so last segment must contain newest data
+                auto st = _check_pk_in_pre_segments(rowset_id, pre_segments, key, delete_bitmap,
+                                                    &loc);
+                if (st.ok()) {
+                    delete_bitmap->add({rowset_id, loc.segment_id, 0}, loc.row_id);
+                    ++row_id;
+                } else if (st.is<ALREADY_EXIST>()) {
+                    delete_bitmap->add({rowset_id, seg->id(), 0}, row_id);
+                    ++row_id;
+                } else {
+                    return st;
+                }
+            }
+            remaining -= num_read;
+        }
+        pre_segments.emplace_back(seg);
+    }
+    // add last block for partial update
+    if (pos > 0) {
+        generate_new_block_for_partial_update(rowset_schema, read_plan_ori, read_plan_update,
+                                              rsid_to_rowset, &block);
+        sort_block(block, ordered_block);
+        int64_t size;
+        rowset_writer->flush_single_memtable(&ordered_block, &size);
+    }
+
+    LOG(INFO) << "calculate delete bitmap between segments with pkindex in " << watch.get_elapse_time_us() << " us";
     return Status::OK();
 }
 
