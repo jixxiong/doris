@@ -99,7 +99,7 @@ public:
     VMergeIteratorContext& operator=(const VMergeIteratorContext&) = delete;
     VMergeIteratorContext& operator=(VMergeIteratorContext&&) = delete;
 
-    ~VMergeIteratorContext() {}
+    ~VMergeIteratorContext() = default;
 
     Status block_reset(const std::shared_ptr<Block>& block);
 
@@ -114,6 +114,10 @@ public:
     void copy_rows(BlockView* view, bool advanced = true);
 
     RowLocation current_row_location() {
+        return static_cast<const VMergeIteratorContext&>(*this).current_row_location();
+    }
+
+    RowLocation current_row_location() const {
         DCHECK(_record_rowids);
         return _block_row_locations[_index_in_block];
     }
@@ -188,11 +192,12 @@ class VMergeIterator : public RowwiseIterator {
 public:
     // VMergeIterator takes the ownership of input iterators
     VMergeIterator(std::vector<RowwiseIteratorUPtr>&& iters, int sequence_id_idx, bool is_unique,
-                   bool is_reverse, uint64_t* merged_rows)
+                   bool is_reverse, uint64_t* merged_rows, bool save_skipped_locations=false)
             : _origin_iters(std::move(iters)),
               _sequence_id_idx(sequence_id_idx),
               _is_unique(is_unique),
               _is_reverse(is_reverse),
+              _save_skipped(save_skipped_locations),
               _merged_rows(merged_rows) {}
 
     ~VMergeIterator() override {
@@ -225,12 +230,24 @@ public:
         return false;
     }
 
+    std::vector<RowLocation> const& get_skipped_rows() {
+        DCHECK(_is_unique);
+        return _skipped_rows;
+    }
+
+    bool has_skipped_rows() {
+        return !_skipped_rows.empty();
+    }
+
 private:
     int _get_size(Block* block) { return block->rows(); }
     int _get_size(BlockView* block_view) { return block_view->size(); }
 
     template <typename T>
     Status _next_batch(T* block) {
+        if (_save_skipped) {
+            _skipped_rows.clear();
+        }
         if (UNLIKELY(_record_rowids)) {
             _block_row_locations.resize(_block_row_max);
         }
@@ -263,12 +280,18 @@ private:
                     ctx->copy_rows(block, false);
                     pre_ctx = nullptr;
                 }
-            } else if (_merged_rows != nullptr) {
-                (*_merged_rows)++;
-                // need skip cur row, so flush rows in pre_ctx
-                if (pre_ctx) {
-                    pre_ctx->copy_rows(block);
-                    pre_ctx = nullptr;
+            } else {
+                // the row that needs to be skipped
+                if (_save_skipped) {
+                    _skipped_rows.emplace_back(ctx->current_row_location());
+                }
+                if (_merged_rows != nullptr) {
+                    (*_merged_rows)++;
+                    // need skip cur row, so flush rows in pre_ctx
+                    if (pre_ctx) {
+                        pre_ctx->copy_rows(block);
+                        pre_ctx = nullptr;
+                    }
                 }
             }
 
@@ -313,9 +336,11 @@ private:
     int _sequence_id_idx = -1;
     bool _is_unique = false;
     bool _is_reverse = false;
+    bool _save_skipped = false;
     uint64_t* _merged_rows = nullptr;
     bool _record_rowids = false;
     std::vector<RowLocation> _block_row_locations;
+    std::vector<RowLocation> _skipped_rows;
 };
 
 // Create a merge iterator for input iterators. Merge iterator will merge

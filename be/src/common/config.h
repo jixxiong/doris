@@ -1014,6 +1014,9 @@ DECLARE_mInt32(s3_write_buffer_whole_size);
 //enable shrink memory
 DECLARE_Bool(enable_shrink_memory);
 
+// enable calculate delete bitmap between segments with VMergeIterator
+DECLARE_Bool(enable_vmiter);
+
 #ifdef BE_TEST
 // test s3
 DECLARE_String(test_s3_resource);
