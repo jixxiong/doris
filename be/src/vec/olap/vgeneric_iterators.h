@@ -230,11 +230,9 @@ public:
         return false;
     }
 
-    std::vector<RowLocation> get_skipped_rows() {
+    std::vector<RowLocation> const& get_skipped_rows() {
         DCHECK(_is_unique);
-        std::vector<RowLocation> ret;
-        ret.swap(_skipped_rows);
-        return ret;
+        return _skipped_rows;
     }
 
     bool has_skipped_rows() {
@@ -247,6 +245,9 @@ private:
 
     template <typename T>
     Status _next_batch(T* block) {
+        if (_save_skipped) {
+            _skipped_rows.clear();
+        }
         if (UNLIKELY(_record_rowids)) {
             _block_row_locations.resize(_block_row_max);
         }

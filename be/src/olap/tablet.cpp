@@ -2955,9 +2955,12 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
 
     RowsetIdUnorderedSet cur_rowset_ids = all_rs_id(cur_version - 1);
     DeleteBitmapPtr delete_bitmap = std::make_shared<DeleteBitmap>(tablet_id());
-    RETURN_IF_ERROR(calc_delete_bitmap_between_segments(rowset, segments, delete_bitmap, cur_version - 1));
-    // RETURN_IF_ERROR(calc_delete_bitmap(rowset, segments, &cur_rowset_ids, delete_bitmap,
-    //                                    cur_version - 1, true));
+    if (config::enable_vmiter) {
+        RETURN_IF_ERROR(calc_delete_bitmap_between_segments(rowset, segments, delete_bitmap, cur_version - 1));
+    } else {
+        RETURN_IF_ERROR(calc_delete_bitmap(rowset, segments, &cur_rowset_ids, delete_bitmap,
+                                           cur_version - 1));
+    }
     for (auto iter = delete_bitmap->delete_bitmap.begin();
          iter != delete_bitmap->delete_bitmap.end(); ++iter) {
         _tablet_meta->delete_bitmap().merge(
@@ -3174,63 +3177,50 @@ Status Tablet::calc_delete_bitmap_between_segments(RowsetSharedPtr rowset,
                                               const std::vector<segment_v2::SegmentSharedPtr>& segments,
                                               DeleteBitmapPtr delete_bitmap, int64_t end_version) {
     OlapStopWatch watch;
-    // auto rowset_schema = rowset->tablet_schema();
-    LOG(INFO) << "working on calculating delete bitmap betweens segments";
-
     auto tablet_schema = _schema;
 
+    // If there are fewer than 2 segments, 
+    // no rows can be deleted, so return immediately.
+    if (segments.size() < 2) {
+        return Status::OK();
+    }
+
     OlapReaderStatistics rd_stats;
+    Schema schema(tablet_schema);
     StorageReadOptions opts;
     opts.record_rowids = true;
-    opts.block_row_max = tablet_schema->num_rows_per_row_block();
     opts.use_page_cache = false;
     opts.stats = &rd_stats;
     opts.tablet_schema = tablet_schema;
-
-    auto schema = Schema(tablet_schema);
+    opts.block_row_max = tablet_schema->num_rows_per_row_block();
 
     std::vector<RowwiseIteratorUPtr> segment_iters(segments.size());
     for (size_t i = 0; i < segments.size(); ++i) {
-        LOG(INFO) << "start init segments iterator " << i << "/" << segments.size();
         auto& seg = segments[i];
         seg->new_iterator(schema, opts, &segment_iters[i]);
-        LOG(INFO) << "successfully init segments iterator " << i << "/" << segments.size();
     }
-
     auto iter = std::make_unique<vectorized::VMergeIterator>(
         std::move(segment_iters), tablet_schema->sequence_col_idx(), 
         true, false, nullptr, true);
-
-    LOG(INFO) << "start init merge iterator";
     iter->init(opts);
-    LOG(INFO) << "successfully init merge iterator";
-
-    // size_t cnt = 0;
-
     while (true) {
         vectorized::Block block = tablet_schema->create_block();
         auto st = iter->next_batch(&block);
-
         if (st.is<END_OF_FILE>()) {
             break;
         }
-
         if (st.ok()) {
             if (iter->has_skipped_rows()) {
-                auto rows_to_delete = iter->get_skipped_rows();
+                auto const& rows_to_delete = iter->get_skipped_rows();
                 for (auto&& loc : rows_to_delete) {
                     delete_bitmap->add({loc.rowset_id, loc.segment_id, 0}, loc.row_id);
                 }
             }
             continue;
         }
-
-        // LOG(INFO) << "calculate delete bitmap in segments status of " << ++cnt << "-th batch: " << st;
-
         return Status::InternalError("failed to calculate delete bitmap between segments");
     }
-
-    LOG(INFO) << "calc delete bitmap betweens segments in " << watch.get_elapse_time_us() << " us";
+    LOG(INFO) << "calculate delete bitmap betweens segments in " << watch.get_elapse_time_us() << " us";
     return Status::OK();
 }
 
