@@ -17,9 +17,9 @@
 
 CREATE TABLE IF NOT EXISTS hits (
     CounterID INT NOT NULL, 
-    EventDate Date NOT NULL,
+    EventDate Datev2 NOT NULL,
     UserID BIGINT NOT NULL, 
-    EventTime DateTime NOT NULL,
+    EventTime DateTimev2 NOT NULL,
     WatchID BIGINT NOT NULL, 
     JavaEnable SMALLINT NOT NULL,
     Title STRING NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS hits (
     WindowClientWidth SMALLINT NOT NULL,
     WindowClientHeight SMALLINT NOT NULL,
     ClientTimeZone SMALLINT NOT NULL,
-    ClientEventTime DateTime NOT NULL,
+    ClientEventTime DateTimev2 NOT NULL,
     SilverlightVersion1 SMALLINT NOT NULL,
     SilverlightVersion2 SMALLINT NOT NULL,
     SilverlightVersion3 INT NOT NULL,
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS hits (
     DontCountHits SMALLINT NOT NULL,
     WithHash SMALLINT NOT NULL,
     HitColor CHAR NOT NULL,
-    LocalEventTime DateTime NOT NULL,
+    LocalEventTime DateTimev2 NOT NULL,
     Age SMALLINT NOT NULL,
     Sex SMALLINT NOT NULL,
     Income SMALLINT NOT NULL,
@@ -122,6 +122,6 @@ CREATE TABLE IF NOT EXISTS hits (
     URLHash BIGINT NOT NULL,
     CLID INT NOT NULL
 )  
-DUPLICATE KEY (CounterID, EventDate, UserID, EventTime, WatchID) 
-DISTRIBUTED BY HASH(UserID) BUCKETS 48
-PROPERTIES ( "replication_num"="1");
+UNIQUE KEY (CounterID, EventDate, UserID, EventTime, WatchID) 
+DISTRIBUTED BY HASH(UserID) BUCKETS 1
+PROPERTIES ( "replication_num"="1", "enable_unique_key_merge_on_write"="true");
