@@ -2954,8 +2954,8 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
 
     RowsetIdUnorderedSet cur_rowset_ids = all_rs_id(cur_version - 1);
     DeleteBitmapPtr delete_bitmap = std::make_shared<DeleteBitmap>(tablet_id());
-    RETURN_IF_ERROR(calc_delete_bitmap(rowset, segments, &cur_rowset_ids, delete_bitmap,
-                                       cur_version - 1, true));
+    RETURN_IF_ERROR(
+            calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
     for (auto iter = delete_bitmap->delete_bitmap.begin();
          iter != delete_bitmap->delete_bitmap.end(); ++iter) {
         _tablet_meta->delete_bitmap().merge(
@@ -2998,7 +2998,7 @@ Status Tablet::update_delete_bitmap(const RowsetSharedPtr& rowset, const TabletT
 
     if (!rowset_ids_to_add.empty()) {
         RETURN_IF_ERROR(calc_delete_bitmap(rowset, segments, &rowset_ids_to_add, delete_bitmap,
-                                           cur_version - 1, false, rowset_writer));
+                                           cur_version - 1, rowset_writer));
     }
 
     // update version without write lock, compaction and publish_txn
@@ -3166,6 +3166,60 @@ bool Tablet::should_skip_compaction(CompactionType compaction_type, int64_t now)
         return true;
     }
     return false;
+}
+
+// caller should hold meta_lock
+Status Tablet::calc_delete_bitmap_between_segments_with_pkindex(
+        RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
+        DeleteBitmapPtr delete_bitmap) {
+    size_t const num_segments = segments.size();
+    LOG(INFO) << "calculate delete bitmap between segments with MergedIterator(key index)";
+    LOG(INFO) << fmt::format("number of segments to be merged is {}", num_segments);
+
+    if (num_segments < 2) {
+        return Status::OK();
+    }
+
+    OlapStopWatch watch;
+
+    auto const rowset_id = rowset->rowset_id();
+    std::vector<MergeIndexedColumnIteratorContext> nodes;
+    nodes.reserve(num_segments);
+    for (auto& seg : segments) {
+        nodes.emplace_back(seg);
+    }
+
+    MergeIndexedColumnIteratorContext::Comparator cmp;
+
+    std::priority_queue<MergeIndexedColumnIteratorContext*,
+                        std::vector<MergeIndexedColumnIteratorContext*>,
+                        MergeIndexedColumnIteratorContext::Comparator>
+            heap(cmp);
+    for (auto& node : nodes) {
+        heap.push(&node);
+    }
+
+    Slice prev_key;
+    while (!heap.empty()) {
+        auto cur = heap.top();
+        heap.pop();
+        auto&& [st, key] = cur->get_current_key();
+        DCHECK(st.ok());
+        if (cmp.is_same(cur, prev_key)) {
+            delete_bitmap->add({rowset_id, cur->segment_id(), 0}, cur->current_row_id());
+        } else {
+            prev_key = key;
+        }
+        st = cur->advance();
+        DCHECK(st.ok() || st.is<END_OF_FILE>());
+        if (!st.is<END_OF_FILE>()) {
+            heap.push(cur);
+        }
+    }
+
+    LOG(INFO) << "calculate delete bitmap between segments with merged pkindex in "
+              << watch.get_elapse_time_us() << " us";
+    return Status::OK();
 }
 
 } // namespace doris
