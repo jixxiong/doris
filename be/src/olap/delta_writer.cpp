@@ -403,20 +403,15 @@ Status DeltaWriter::close_wait(const PSlaveTabletNodes& slave_tablet_nodes,
         }
         if (segments.size() > 1) {
             // calculate delete bitmap between segments
-            if (config::enable_vmiter) {
-                LOG(INFO) << "calculate delete bitmap between segments with VMergeIterator";
+            if (config::merge_algo == 1) {
+                RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
+                        _cur_rowset, segments, _delete_bitmap));
+            } else if (config::merge_algo == 2) {
                 RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments(_cur_rowset, segments,
                                                                              _delete_bitmap));
             } else {
-                LOG(INFO) << "calculate delete bitmap between segments without VMergeIterator";
-                std::set<std::pair<int32_t, int32_t>> st1, st2;
-                RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
-                        _cur_rowset, segments, _delete_bitmap, st1));
                 RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments_with_pkindex(
-                        _cur_rowset, segments, _delete_bitmap, st2));
-                DCHECK(st1 == st2) << "two alorithm has different result";
-                LOG(INFO) << fmt::format("set1.size() {}, set2.size() {}", st1.size(), st2.size());
-                LOG(INFO) << "calculate delete bitmap between segments check passed";
+                        _cur_rowset, segments, _delete_bitmap));
             }
         }
         _storage_engine->txn_manager()->set_txn_related_delete_bitmap(

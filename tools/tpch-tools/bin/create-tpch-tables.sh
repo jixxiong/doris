@@ -91,6 +91,7 @@ echo "FE_QUERY_PORT: ${FE_QUERY_PORT}"
 echo "USER: ${USER}"
 echo "DB: ${DB}"
 
+mysql -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -e "drop DATABASE IF EXISTS ${DB} force"
 mysql -h"${FE_HOST}" -u"${USER}" -P"${FE_QUERY_PORT}" -e "CREATE DATABASE IF NOT EXISTS ${DB}"
 
 echo "Run SQLs from ${CURDIR}/create-tpch-tables.sql"

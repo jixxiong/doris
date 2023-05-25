@@ -173,11 +173,11 @@ function load_lineitem() {
 # start load
 start_time=$(date +%s)
 echo "Start time: $(date)"
-load_region "${TPCH_DATA_DIR}"/region.tbl
-load_nation "${TPCH_DATA_DIR}"/nation.tbl
-load_supplier "${TPCH_DATA_DIR}"/supplier.tbl
-load_customer "${TPCH_DATA_DIR}"/customer.tbl
-load_part "${TPCH_DATA_DIR}"/part.tbl
+# load_region "${TPCH_DATA_DIR}"/region.tbl
+# load_nation "${TPCH_DATA_DIR}"/nation.tbl
+# load_supplier "${TPCH_DATA_DIR}"/supplier.tbl
+# load_customer "${TPCH_DATA_DIR}"/customer.tbl
+# load_part "${TPCH_DATA_DIR}"/part.tbl
 
 # set parallelism
 
@@ -196,7 +196,7 @@ for ((i = 1; i <= PARALLEL; i++)); do
 done
 
 date
-for file in "${TPCH_DATA_DIR}"/lineitem.tbl*; do
+for file in "${TPCH_DATA_DIR}"/lineitem.tbl.1; do
     # 领取令牌, 即从fd3中读取行, 每次一行
     # 对管道，读一行便少一行，每次只能读取一行
     # 所有行读取完毕, 执行挂起, 直到管道再次有可读行
@@ -213,27 +213,27 @@ for file in "${TPCH_DATA_DIR}"/lineitem.tbl*; do
     } &
 done
 
-date
-for file in "${TPCH_DATA_DIR}"/orders.tbl*; do
-    read -r -u3
-    {
-        load_orders "${file}"
-        echo "----loaded ${file}"
-        sleep 2
-        echo >&3
-    } &
-done
+# date
+# for file in "${TPCH_DATA_DIR}"/orders.tbl*; do
+#     read -r -u3
+#     {
+#         load_orders "${file}"
+#         echo "----loaded ${file}"
+#         sleep 2
+#         echo >&3
+#     } &
+# done
 
-date
-for file in "${TPCH_DATA_DIR}"/partsupp.tbl*; do
-    read -r -u3
-    {
-        load_partsupp "${file}"
-        echo "----loaded ${file}"
-        sleep 2
-        echo >&3
-    } &
-done
+# date
+# for file in "${TPCH_DATA_DIR}"/partsupp.tbl*; do
+#     read -r -u3
+#     {
+#         load_partsupp "${file}"
+#         echo "----loaded ${file}"
+#         sleep 2
+#         echo >&3
+#     } &
+# done
 
 # 等待所有的后台子进程结束
 wait
