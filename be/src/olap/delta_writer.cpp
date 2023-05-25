@@ -403,15 +403,27 @@ Status DeltaWriter::close_wait(const PSlaveTabletNodes& slave_tablet_nodes,
         }
         if (segments.size() > 1) {
             // calculate delete bitmap between segments
+            auto do_check = [&](RowsetSharedPtr rowset,
+                                const std::vector<segment_v2::SegmentSharedPtr>& segments,
+                                DeleteBitmapPtr delete_bitmap) {
+                auto [st1, set1] = (_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
+                        rowset, segments, delete_bitmap));
+                auto [st2, set2] = (_tablet->calc_delete_bitmap_between_segments_with_pkindex(
+                        rowset, segments, delete_bitmap));
+                DCHECK(st1.ok() && st2.ok());
+                DCHECK(set1 == set2);
+            };
             if (config::merge_algo == 1) {
-                RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
+                auto [st, set] = (_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
                         _cur_rowset, segments, _delete_bitmap));
             } else if (config::merge_algo == 2) {
                 RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments(_cur_rowset, segments,
                                                                              _delete_bitmap));
-            } else {
-                RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments_with_pkindex(
+            } else if (config::merge_algo == 3) {
+                auto [st, set] = (_tablet->calc_delete_bitmap_between_segments_with_pkindex(
                         _cur_rowset, segments, _delete_bitmap));
+            } else if (config::merge_algo == -1) {
+                do_check(_cur_rowset, segments, _delete_bitmap);
             }
         }
         _storage_engine->txn_manager()->set_txn_related_delete_bitmap(

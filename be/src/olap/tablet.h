@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -430,10 +431,12 @@ public:
     Status calc_delete_bitmap_between_segments(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
-    Status calc_delete_bitmap_between_segments_without_VMIterator(
+    std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
+    calc_delete_bitmap_between_segments_without_VMIterator(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
-    Status calc_delete_bitmap_between_segments_with_pkindex(
+    std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
+    calc_delete_bitmap_between_segments_with_pkindex(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
     Status read_columns_by_plan(TabletSchemaSPtr tablet_schema,
@@ -836,6 +839,9 @@ public:
         DCHECK(num_to_read == num_read)
                 << "num_to_read: " << num_to_read << ", num_read: " << num_read;
         _last_key = _index_column->get_data_at(num_read - 1).to_string();
+        if (num_read == batch_size && num_read != _remaining) {
+            num_read -= 1;
+        }
         _cur_size = num_read;
         _cur_pos = 0;
         _remaining -= num_read;

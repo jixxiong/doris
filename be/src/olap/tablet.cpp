@@ -2954,16 +2954,29 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
     std::vector<segment_v2::SegmentSharedPtr> segments;
     _load_rowset_segments(rowset, &segments);
 
+    auto do_check = [&](RowsetSharedPtr rowset,
+                        const std::vector<segment_v2::SegmentSharedPtr>& segments,
+                        DeleteBitmapPtr delete_bitmap) {
+        auto [st1, set1] = (calc_delete_bitmap_between_segments_without_VMIterator(rowset, segments,
+                                                                                   delete_bitmap));
+        auto [st2, set2] =
+                (calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
+        DCHECK(st1.ok() && st2.ok());
+        DCHECK(set1 == set2);
+    };
+
     RowsetIdUnorderedSet cur_rowset_ids = all_rs_id(cur_version - 1);
     DeleteBitmapPtr delete_bitmap = std::make_shared<DeleteBitmap>(tablet_id());
     if (config::merge_algo == 1) {
-        RETURN_IF_ERROR(calc_delete_bitmap_between_segments_without_VMIterator(rowset, segments,
-                                                                               delete_bitmap));
+        auto [st, set] = (calc_delete_bitmap_between_segments_without_VMIterator(rowset, segments,
+                                                                                 delete_bitmap));
     } else if (config::merge_algo == 2) {
         RETURN_IF_ERROR(calc_delete_bitmap_between_segments(rowset, segments, delete_bitmap));
-    } else {
-        RETURN_IF_ERROR(
-                calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
+    } else if (config::merge_algo == 3) {
+        auto [st, set] =
+                (calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
+    } else if (config::merge_algo == -1) {
+        do_check(rowset, segments, delete_bitmap);
     }
     for (auto iter = delete_bitmap->delete_bitmap.begin();
          iter != delete_bitmap->delete_bitmap.end(); ++iter) {
@@ -3234,12 +3247,14 @@ Status Tablet::calc_delete_bitmap_between_segments(
 }
 
 // caller should hold meta_lock
-Status Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
+std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
+Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
         RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
         DeleteBitmapPtr delete_bitmap) {
     LOG(INFO) << "calculate delete bitmap between segments with old impl(pkindex, do prev_check)";
     LOG(INFO) << fmt::format("number of segments to be merged is {}", segments.size());
 
+    std::set<std::pair<int32_t, int32_t>> ret;
     std::vector<segment_v2::SegmentSharedPtr> pre_segments;
     OlapStopWatch watch;
 
@@ -3265,21 +3280,29 @@ Status Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
         int batch_size = 1024;
         while (remaining > 0) {
             std::unique_ptr<segment_v2::IndexedColumnIterator> iter;
-            RETURN_IF_ERROR(pk_idx->new_iterator(&iter));
-
+            auto st = (pk_idx->new_iterator(&iter));
+            if (UNLIKELY(!st.ok())) {
+                return {st, {}};
+            }
             size_t num_to_read = std::min(batch_size, remaining);
             auto index_type = vectorized::DataTypeFactory::instance().create_data_type(
                     pk_idx->type_info()->type(), 1, 0);
             auto index_column = index_type->create_column();
             Slice last_key_slice(last_key);
-            RETURN_IF_ERROR(iter->seek_at_or_after(&last_key_slice, &exact_match));
+            st = (iter->seek_at_or_after(&last_key_slice, &exact_match));
+            if (UNLIKELY(!st.ok())) {
+                return {st, {}};
+            }
             auto current_ordinal = iter->get_current_ordinal();
             DCHECK(total == remaining + current_ordinal)
                     << "total: " << total << ", remaining: " << remaining
                     << ", current_ordinal: " << current_ordinal;
 
             size_t num_read = num_to_read;
-            RETURN_IF_ERROR(iter->next_batch(&num_read, index_column));
+            st = (iter->next_batch(&num_read, index_column));
+            if (UNLIKELY(!st.ok())) {
+                return {st, {}};
+            }
             DCHECK(num_to_read == num_read)
                     << "num_to_read: " << num_to_read << ", num_read: " << num_read;
             last_key = index_column->get_data_at(num_read - 1).to_string();
@@ -3299,9 +3322,11 @@ Status Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
                                                     &loc);
                 if (st.ok()) {
                     delete_bitmap->add({rowset_id, loc.segment_id, 0}, loc.row_id);
+                    ret.emplace(loc.segment_id, loc.row_id);
                     ++row_id;
                 } else if (st.is<ALREADY_EXIST>()) {
                     delete_bitmap->add({rowset_id, seg->id(), 0}, row_id);
+                    ret.emplace(seg->id(), row_id);
                     ++row_id;
                 }
                 // not found do nothing
@@ -3313,11 +3338,12 @@ Status Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
 
     LOG(INFO) << "calculate delete bitmap between segments with pkindex in "
               << watch.get_elapse_time_us() << " us";
-    return Status::OK();
+    return {Status::OK(), {}};
 }
 
 // caller should hold meta_lock
-Status Tablet::calc_delete_bitmap_between_segments_with_pkindex(
+std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
+Tablet::calc_delete_bitmap_between_segments_with_pkindex(
         RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
         DeleteBitmapPtr delete_bitmap) {
     size_t const num_segments = segments.size();
@@ -3325,10 +3351,12 @@ Status Tablet::calc_delete_bitmap_between_segments_with_pkindex(
     LOG(INFO) << fmt::format("number of segments to be merged is {}", num_segments);
 
     if (num_segments < 2) {
-        return Status::OK();
+        return {Status::OK(), {}};
     }
 
     OlapStopWatch watch;
+
+    std::set<std::pair<int32_t, int32_t>> ret;
 
     auto const rowset_id = rowset->rowset_id();
     std::vector<MergeIndexedColumnIteratorContext> nodes;
@@ -3355,6 +3383,7 @@ Status Tablet::calc_delete_bitmap_between_segments_with_pkindex(
         DCHECK(st.ok());
         if (cmp.is_same(cur, prev_key)) {
             delete_bitmap->add({rowset_id, cur->segment_id(), 0}, cur->current_row_id());
+            ret.emplace(cur->segment_id(), cur->current_row_id());
         } else {
             prev_key = key;
         }
@@ -3367,7 +3396,7 @@ Status Tablet::calc_delete_bitmap_between_segments_with_pkindex(
 
     LOG(INFO) << "calculate delete bitmap between segments with merged pkindex in "
               << watch.get_elapse_time_us() << " us";
-    return Status::OK();
+    return {Status::OK(), {}};
 }
 
 } // namespace doris
