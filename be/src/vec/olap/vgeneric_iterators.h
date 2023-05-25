@@ -192,14 +192,14 @@ class VMergeIterator : public RowwiseIterator {
 public:
     // VMergeIterator takes the ownership of input iterators
     VMergeIterator(std::vector<RowwiseIteratorUPtr>&& iters, int sequence_id_idx, bool is_unique,
-                   bool is_reverse, uint64_t* merged_rows, bool save_skipped_locations=false)
+                   bool is_reverse, uint64_t* merged_rows, bool save_skipped_locations = false)
             : _origin_iters(std::move(iters)),
               _sequence_id_idx(sequence_id_idx),
               _is_unique(is_unique),
               _is_reverse(is_reverse),
               _save_skipped(save_skipped_locations),
               _merged_rows(merged_rows) {}
-
+    OlapStopWatch watch;
     ~VMergeIterator() override {
         while (!_merge_heap.empty()) {
             auto ctx = _merge_heap.top();
@@ -235,9 +235,7 @@ public:
         return _skipped_rows;
     }
 
-    bool has_skipped_rows() {
-        return !_skipped_rows.empty();
-    }
+    bool has_skipped_rows() { return !_skipped_rows.empty(); }
 
 private:
     int _get_size(Block* block) { return block->rows(); }

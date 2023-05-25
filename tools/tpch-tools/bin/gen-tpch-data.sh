@@ -29,8 +29,8 @@ ROOT=$(
 )
 
 CURDIR="${ROOT}"
-TPCH_DBGEN_DIR="${CURDIR}/TPC-H_Tools_v3.0.0/dbgen/"
-TPCH_DATA_DIR="${CURDIR}/tpch-data/"
+TPCH_DBGEN_DIR="${CURDIR}/TPC-H_Tools_v3.0.0/dbgen"
+TPCH_DATA_DIR="${CURDIR}/tpch-data"
 
 usage() {
     echo "

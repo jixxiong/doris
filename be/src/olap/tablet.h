@@ -425,14 +425,15 @@ public:
                               const RowsetIdUnorderedSet* specified_rowset_ids,
                               DeleteBitmapPtr delete_bitmap, int64_t version,
                               RowsetWriter* rowset_writer = nullptr);
-    Status calc_delete_bitmap_between_segments(RowsetSharedPtr rowset,
-                                              const std::vector<segment_v2::SegmentSharedPtr>& segments,
-                                              DeleteBitmapPtr delete_bitmap, int64_t end_version);
-    Status calc_delete_bitmap_between_segments_without_VMIterator(RowsetSharedPtr rowset,
-                                  const std::vector<segment_v2::SegmentSharedPtr>& segments,
-                                  const RowsetIdUnorderedSet* specified_rowset_ids,
-                                  DeleteBitmapPtr delete_bitmap, int64_t end_version,
-                                  RowsetWriter* rowset_writer=nullptr);
+    Status calc_delete_bitmap_between_segments(
+            RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
+            DeleteBitmapPtr delete_bitmap);
+    Status calc_delete_bitmap_between_segments_without_VMIterator(
+            RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
+            DeleteBitmapPtr delete_bitmap, std::set<std::pair<int32_t, int32_t>>& st);
+    Status calc_delete_bitmap_between_segments_with_pkindex(
+            RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
+            DeleteBitmapPtr delete_bitmap, std::set<std::pair<int32_t, int32_t>>& st);
     Status read_columns_by_plan(TabletSchemaSPtr tablet_schema,
                                 const std::vector<uint32_t> cids_to_read,
                                 const PartialUpdateReadPlan& read_plan,

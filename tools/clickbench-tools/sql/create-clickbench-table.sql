@@ -124,4 +124,4 @@ CREATE TABLE IF NOT EXISTS hits (
 )  
 UNIQUE KEY (CounterID, EventDate, UserID, EventTime, WatchID) 
 DISTRIBUTED BY HASH(UserID) BUCKETS 1
-PROPERTIES ( "replication_num"="1", "enable_unique_key_merge_on_write"="true");
+PROPERTIES ( "replication_num"="1", "enable_unique_key_merge_on_write"="true", "disable_auto_compaction"="true" );
