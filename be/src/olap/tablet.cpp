@@ -27,6 +27,7 @@
 #include <gen_cpp/Metrics_types.h>
 #include <gen_cpp/olap_file.pb.h>
 #include <gen_cpp/types.pb.h>
+#include <glog/logging.h>
 #include <rapidjson/document.h>
 #include <rapidjson/encodings.h>
 #include <rapidjson/prettywriter.h>
@@ -61,6 +62,7 @@
 #include "agent/utils.h"
 #include "common/config.h"
 #include "common/consts.h"
+#include "common/exception.h"
 #include "common/logging.h"
 #include "common/status.h"
 #include "gutil/ref_counted.h"
@@ -2962,6 +2964,7 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
         auto [st2, set2] =
                 (calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
         DCHECK(st1.ok() && st2.ok());
+        LOG(INFO) << fmt::format("set1.size()={}, set2.size()={}", set1.size(), set2.size());
         DCHECK(set1 == set2);
     };
 
@@ -2970,11 +2973,15 @@ Status Tablet::update_delete_bitmap_without_lock(const RowsetSharedPtr& rowset) 
     if (config::merge_algo == 1) {
         auto [st, set] = (calc_delete_bitmap_between_segments_without_VMIterator(rowset, segments,
                                                                                  delete_bitmap));
+        RETURN_IF_ERROR(st);
+        LOG(INFO) << fmt::format("set1.size(): {}", set.size());
     } else if (config::merge_algo == 2) {
         RETURN_IF_ERROR(calc_delete_bitmap_between_segments(rowset, segments, delete_bitmap));
     } else if (config::merge_algo == 3) {
         auto [st, set] =
                 (calc_delete_bitmap_between_segments_with_pkindex(rowset, segments, delete_bitmap));
+        RETURN_IF_ERROR(st);
+        LOG(INFO) << fmt::format("set3.size(): {}", set.size());
     } else if (config::merge_algo == -1) {
         do_check(rowset, segments, delete_bitmap);
     }
@@ -3322,11 +3329,15 @@ Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
                                                     &loc);
                 if (st.ok()) {
                     delete_bitmap->add({rowset_id, loc.segment_id, 0}, loc.row_id);
-                    ret.emplace(loc.segment_id, loc.row_id);
+                    if (config::merge_algo == -1) {
+                        ret.emplace(loc.segment_id, loc.row_id);
+                    }
                     ++row_id;
                 } else if (st.is<ALREADY_EXIST>()) {
                     delete_bitmap->add({rowset_id, seg->id(), 0}, row_id);
-                    ret.emplace(seg->id(), row_id);
+                    if (config::merge_algo == -1) {
+                        ret.emplace(seg->id(), row_id);
+                    }
                     ++row_id;
                 }
                 // not found do nothing
@@ -3338,7 +3349,7 @@ Tablet::calc_delete_bitmap_between_segments_without_VMIterator(
 
     LOG(INFO) << "calculate delete bitmap between segments with pkindex in "
               << watch.get_elapse_time_us() << " us";
-    return {Status::OK(), {}};
+    return {Status::OK(), ret};
 }
 
 // caller should hold meta_lock
@@ -3365,7 +3376,13 @@ Tablet::calc_delete_bitmap_between_segments_with_pkindex(
         nodes.emplace_back(seg);
     }
 
-    MergeIndexedColumnIteratorContext::Comparator cmp;
+    size_t seq_col_length = 0;
+    if (_schema->has_sequence_col()) {
+        auto seq_col_idx = _schema->sequence_col_idx();
+        seq_col_length = _schema->column(seq_col_idx).length();
+    }
+
+    MergeIndexedColumnIteratorContext::Comparator cmp(seq_col_length);
 
     std::priority_queue<MergeIndexedColumnIteratorContext*,
                         std::vector<MergeIndexedColumnIteratorContext*>,
@@ -3375,28 +3392,51 @@ Tablet::calc_delete_bitmap_between_segments_with_pkindex(
         heap.push(&node);
     }
 
-    Slice prev_key;
-    while (!heap.empty()) {
+    // Slice prev_key;
+    while (heap.size() > 1) {
         auto cur = heap.top();
         heap.pop();
-        auto&& [st, key] = cur->get_current_key();
+        auto [st, key] = cur->get_current_key();
         DCHECK(st.ok());
-        if (cmp.is_same(cur, prev_key)) {
-            delete_bitmap->add({rowset_id, cur->segment_id(), 0}, cur->current_row_id());
-            ret.emplace(cur->segment_id(), cur->current_row_id());
-        } else {
-            prev_key = key;
+        auto nxt = heap.top();
+        bool no_next = false;
+        while (cmp.is_key_same(nxt, key)) {
+            DCHECK(cur->segment_id() > nxt->segment_id())
+                    << "cur->segment_id() should greater or equal than nxt->segment_id()";
+            // LOG(INFO) << fmt::format("to delete {}:{}", nxt->segment_id(), nxt->current_row_id());
+            delete_bitmap->add({rowset_id, nxt->segment_id(), 0}, nxt->current_row_id());
+            ret.emplace(nxt->segment_id(), nxt->current_row_id());
+            heap.pop();
+            st = nxt->advance();
+            if (!st.is<END_OF_FILE>()) {
+                heap.push(nxt);
+            }
+            if (heap.empty()) {
+                no_next = true;
+                break;
+            }
+            nxt = heap.top();
         }
-        st = cur->advance();
-        DCHECK(st.ok() || st.is<END_OF_FILE>());
-        if (!st.is<END_OF_FILE>()) {
+        if (no_next) {
+            break;
+        }
+        auto [st2, nxt_key] = nxt->get_current_key();
+        DCHECK(key.compare(nxt_key) < 0) << "key should be greater or equal than nxt_key";
+        DCHECK(st2.ok());
+        st = cur->jump_to_ge(nxt_key);
+        if (st.is<END_OF_FILE>()) {
+            continue;
+        }
+        if (st.ok()) {
             heap.push(cur);
+            continue;
         }
+        return {st, {}};
     }
 
     LOG(INFO) << "calculate delete bitmap between segments with merged pkindex in "
               << watch.get_elapse_time_us() << " us";
-    return {Status::OK(), {}};
+    return {Status::OK(), ret};
 }
 
 } // namespace doris

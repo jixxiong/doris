@@ -411,17 +411,23 @@ Status DeltaWriter::close_wait(const PSlaveTabletNodes& slave_tablet_nodes,
                 auto [st2, set2] = (_tablet->calc_delete_bitmap_between_segments_with_pkindex(
                         rowset, segments, delete_bitmap));
                 DCHECK(st1.ok() && st2.ok());
+                LOG(INFO) << fmt::format("set1.size()={}, set2.size()={}", set1.size(),
+                                         set2.size());
                 DCHECK(set1 == set2);
             };
             if (config::merge_algo == 1) {
                 auto [st, set] = (_tablet->calc_delete_bitmap_between_segments_without_VMIterator(
                         _cur_rowset, segments, _delete_bitmap));
+                RETURN_IF_ERROR(st);
+                LOG(INFO) << fmt::format("set1.size(): {}", set.size());
             } else if (config::merge_algo == 2) {
                 RETURN_IF_ERROR(_tablet->calc_delete_bitmap_between_segments(_cur_rowset, segments,
                                                                              _delete_bitmap));
             } else if (config::merge_algo == 3) {
                 auto [st, set] = (_tablet->calc_delete_bitmap_between_segments_with_pkindex(
                         _cur_rowset, segments, _delete_bitmap));
+                RETURN_IF_ERROR(st);
+                LOG(INFO) << fmt::format("set3.size(): {}", set.size());
             } else if (config::merge_algo == -1) {
                 do_check(_cur_rowset, segments, _delete_bitmap);
             }
