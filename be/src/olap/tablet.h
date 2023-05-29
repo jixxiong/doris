@@ -54,7 +54,6 @@
 #include "util/metrics.h"
 #include "util/once.h"
 #include "util/slice.h"
-#include "vec/data_types/data_type_factory.hpp"
 
 namespace doris {
 
@@ -428,15 +427,14 @@ public:
                               const RowsetIdUnorderedSet* specified_rowset_ids,
                               DeleteBitmapPtr delete_bitmap, int64_t version,
                               RowsetWriter* rowset_writer = nullptr);
-    Status calc_delete_bitmap_between_segments(
+    Status calc_delete_bitmap_between_segments_old_impl(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
     std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
     calc_delete_bitmap_between_segments_without_VMIterator(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
-    std::pair<Status, std::set<std::pair<int32_t, int32_t>>>
-    calc_delete_bitmap_between_segments_with_pkindex(
+    Status calc_delete_bitmap_between_segments(
             RowsetSharedPtr rowset, const std::vector<segment_v2::SegmentSharedPtr>& segments,
             DeleteBitmapPtr delete_bitmap);
     Status read_columns_by_plan(TabletSchemaSPtr tablet_schema,
@@ -782,148 +780,5 @@ inline size_t Tablet::next_unique_id() const {
 inline size_t Tablet::row_size() const {
     return _schema->row_size();
 }
-
-class MergeIndexedColumnIteratorContext {
-public:
-    class Comparator {
-    public:
-        Comparator(int32_t seq_col_length) : _seq_col_length(seq_col_length) {}
-        bool operator()(MergeIndexedColumnIteratorContext* node1,
-                        MergeIndexedColumnIteratorContext* node2) const {
-            auto&& [st1, key1] = node1->get_current_key();
-            RETURN_IF_ERROR(st1);
-            auto&& [st2, key2] = node2->get_current_key();
-            RETURN_IF_ERROR(st2);
-            if (_seq_col_length == 0) {
-                auto cmp_result = key1.compare(key2);
-                return cmp_result ? (cmp_result > 0) : (node1->segment_id() < node2->segment_id());
-            }
-            auto key1_without_seq = Slice(key1.get_data(), key1.get_size() - _seq_col_length);
-            auto key2_without_seq = Slice(key2.get_data(), key2.get_size() - _seq_col_length);
-            auto cmp_result = key1_without_seq.compare(key2_without_seq);
-            if (cmp_result != 0) {
-                return cmp_result > 0;
-            }
-            auto key1_sequence_val =
-                    Slice(key1.get_data() + key1.get_size() - _seq_col_length, _seq_col_length);
-            auto key2_sequence_val =
-                    Slice(key2.get_data() + key2.get_size() - _seq_col_length, _seq_col_length);
-            cmp_result = key1_sequence_val.compare(key2_sequence_val);
-            if (cmp_result != 0) {
-                return cmp_result > 0;
-            }
-            return node1->segment_id() < node2->segment_id();
-        }
-        bool is_key_same(MergeIndexedColumnIteratorContext* node1, Slice const& key2) const {
-            auto&& [st1, key1] = node1->get_current_key();
-            RETURN_IF_ERROR(st1);
-            auto key1_without_seq = Slice(key1.get_data(), key1.get_size() - _seq_col_length);
-            auto key2_without_seq = Slice(key2.get_data(), key2.get_size() - _seq_col_length);
-            return key1_without_seq.compare(key2_without_seq) == 0;
-        }
-
-    private:
-        int32_t _seq_col_length {0};
-    };
-    MergeIndexedColumnIteratorContext(segment_v2::SegmentSharedPtr segment,
-                                      size_t batch_size = 1024)
-            : _batch_size(batch_size), _segment_id(segment->id()) {
-        segment->load_pk_index_and_bf();
-        auto pk_idx = segment->get_primary_key_index();
-        _index = pk_idx;
-    }
-    Status next_batch() {
-        RETURN_IF_ERROR(_index->new_iterator(&_iter));
-        auto& pk_idx = _index;
-        _index_type = vectorized::DataTypeFactory::instance().create_data_type(
-                pk_idx->type_info()->type(), 1, 0);
-        _index_column = _index_type->create_column();
-        Slice last_key_slice(_last_key);
-        RETURN_IF_ERROR(_iter->seek_at_or_after(&last_key_slice, &_excat_match));
-        auto current_ordinal = _iter->get_current_ordinal();
-        return _next_batch(current_ordinal);
-    }
-    std::pair<Status, Slice> get_current_key() {
-        if (_cur_pos >= _cur_size) {
-            if (_cur_row_id >= _index->num_rows()) {
-                return {Status::EndOfFile("Reach the end of file"), {}};
-            }
-            auto st = next_batch();
-            if (!st.ok()) {
-                return {st, {}};
-            }
-        }
-        return {Status::OK(), Slice(_index_column->get_data_at(_cur_pos).data,
-                                    _index_column->get_data_at(_cur_pos).size)};
-    }
-    Status advance() {
-        ++_cur_pos;
-        ++_cur_row_id;
-        if (_cur_row_id >= _index->num_rows()) {
-            return Status::EndOfFile(fmt::format("Reach the end of file", _segment_id));
-        }
-        return Status::OK();
-    }
-    Status jump_to_ge(Slice const& key) {
-        RETURN_IF_ERROR(_index->new_iterator(&_iter));
-        auto st = _iter->seek_at_or_after(&key, &_excat_match);
-        if (st.is<ErrorCode::NOT_FOUND>()) {
-            return Status::EndOfFile("Reach the end of file");
-        }
-        RETURN_IF_ERROR(st);
-        auto current_ordinal = _iter->get_current_ordinal();
-        DCHECK(current_ordinal > _cur_row_id)
-                << fmt::format("current_ordinal: {} should be greater than _cur_row_id: {}",
-                               current_ordinal, _cur_row_id);
-        if (current_ordinal + _cur_pos < _cur_size + _cur_row_id) {
-            _cur_pos = _cur_pos + current_ordinal - _cur_row_id;
-            _cur_row_id = current_ordinal;
-            return Status::OK();
-        }
-        return _next_batch(current_ordinal);
-    }
-    size_t current_row_id() const { return _cur_row_id; }
-    const TypeInfo* type_info() const { return _index->type_info(); }
-    int32_t segment_id() const { return _segment_id; }
-
-private:
-    Status _next_batch(size_t row_id) {
-        auto total = _index->num_rows();
-        if (row_id >= total) {
-            return Status::EndOfFile("Reach the end of file");
-        }
-        auto& pk_idx = _index;
-        _index_type = vectorized::DataTypeFactory::instance().create_data_type(
-                pk_idx->type_info()->type(), 1, 0);
-        _index_column = _index_type->create_column();
-        auto remaining = total - row_id;
-        size_t num_to_read = std::min(_batch_size, remaining);
-        size_t num_read = num_to_read;
-        RETURN_IF_ERROR(_iter->next_batch(&num_read, _index_column));
-        DCHECK(num_to_read == num_read)
-                << "num_to_read: " << num_to_read << ", num_read: " << num_read;
-        _last_key = _index_column->get_data_at(num_read - 1).to_string();
-        if (num_read == _batch_size && num_read != remaining) {
-            num_read -= 1;
-        }
-        _cur_size = num_read;
-        _cur_pos = 0;
-        _cur_row_id = row_id;
-        // LOG(INFO) << fmt::format("Load data from segment {}, {}~{}/{}", _segment_id, _cur_row_id,
-        //                          _cur_row_id + num_read, _index->num_rows());
-        return Status::OK();
-    }
-    const PrimaryKeyIndexReader* _index {};
-    std::unique_ptr<segment_v2::IndexedColumnIterator> _iter {};
-    std::string _last_key {};
-    size_t _cur_size {0};
-    size_t _cur_pos {0};
-    size_t _cur_row_id {0};
-    vectorized::DataTypePtr _index_type {};
-    vectorized::MutableColumnPtr _index_column {};
-    bool _excat_match {false};
-    size_t const _batch_size {0};
-    int32_t const _segment_id {0};
-};
 
 } // namespace doris
