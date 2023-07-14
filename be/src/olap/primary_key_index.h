@@ -27,6 +27,8 @@
 #include "io/fs/file_reader_writer_fwd.h"
 #include "olap/rowset/segment_v2/bloom_filter.h"
 #include "olap/rowset/segment_v2/bloom_filter_index_writer.h"
+#include "olap/rowset/segment_v2/cuckoo_index_reader.h"
+#include "olap/rowset/segment_v2/cuckoo_index_writer.h"
 #include "olap/rowset/segment_v2/indexed_column_reader.h"
 #include "olap/rowset/segment_v2/indexed_column_writer.h"
 #include "util/faststring.h"
@@ -41,6 +43,8 @@ class FileWriter;
 namespace segment_v2 {
 class PrimaryKeyIndexMetaPB;
 } // namespace segment_v2
+
+class HashPrimaryKeyIndexIterator;
 
 // Build index for primary key.
 // The primary key index is designed in a similar way like RocksDB
@@ -61,9 +65,9 @@ public:
 
     Status add_item(const Slice& key);
 
-    uint32_t num_rows() const { return _num_rows; }
+    [[nodiscard]] uint32_t num_rows() const { return _num_rows; }
 
-    uint64_t size() const { return _size; }
+    [[nodiscard]] uint64_t size() const { return _size; }
 
     uint64_t disk_size() const { return _disk_size; }
 
@@ -82,6 +86,7 @@ private:
     faststring _min_key;
     faststring _max_key;
     std::unique_ptr<segment_v2::IndexedColumnWriter> _primary_key_index_builder;
+    std::unique_ptr<segment_v2::CuckooIndexWriter> _cuckoo_index_builder;
     std::unique_ptr<segment_v2::BloomFilterIndexWriter> _bloom_filter_index_builder;
 };
 
@@ -100,7 +105,9 @@ public:
         return Status::OK();
     }
 
-    const TypeInfo* type_info() const {
+    [[nodiscard]] HashPrimaryKeyIndexIterator new_hash_iterator() const;
+
+    [[nodiscard]] const TypeInfo* type_info() const {
         DCHECK(_index_parsed);
         return _index_reader->type_info();
     }
@@ -111,7 +118,7 @@ public:
         return _bf->test_bytes(key.data, key.size);
     }
 
-    uint32_t num_rows() const {
+    [[nodiscard]] uint32_t num_rows() const {
         DCHECK(_index_parsed);
         return _index_reader->num_values();
     }
@@ -126,11 +133,75 @@ public:
         return _index_reader->get_memory_size();
     }
 
+    friend class HashPrimaryKeyIndexIterator;
+
 private:
     bool _index_parsed;
     bool _bf_parsed;
     std::unique_ptr<segment_v2::IndexedColumnReader> _index_reader;
     std::unique_ptr<segment_v2::BloomFilter> _bf;
+    std::unique_ptr<segment_v2::CuckooIndexReader> _cuckoo_index_reader;
+    std::unique_ptr<segment_v2::CuckooTable> _cuckoo_table;
+};
+
+class HashPrimaryKeyIndexIterator {
+public:
+    HashPrimaryKeyIndexIterator(const PrimaryKeyIndexReader* reader) : _reader(reader) {
+        _reader->new_iterator(&_iter);
+        auto index_type = vectorized::DataTypeFactory::instance().create_data_type(
+                _reader->type_info()->type(), 1, 0);
+        _column = index_type->create_column();
+    }
+
+    Status seek_at(Slice key) {
+        DCHECK(_reader->_index_parsed);
+        for (auto row : _reader->_cuckoo_table->find(key)) {
+            bool match = false;
+            RETURN_IF_ERROR(_do_check(key, row, match));
+            if (match) {
+                current_ordinal = row;
+                seeked = true;
+                return Status::OK();
+            }
+        }
+        seeked = true;
+        return Status::NotFound("key not found");
+    }
+
+    [[nodiscard]] segment_v2::rowid_t get_current_ordinal() const {
+        DCHECK(seeked);
+        return current_ordinal;
+    }
+
+    Status get_full_key(std::string& key) {
+        DCHECK(seeked);
+        Slice key_found;
+        RETURN_IF_ERROR(_read_full_key(current_ordinal, &key_found));
+        return Status::OK();
+    }
+
+private:
+    Status _do_check(Slice const& key, segment_v2::rowid_t rid, bool& match) {
+        Slice key_found;
+        RETURN_IF_ERROR(_read_full_key(rid, &key_found));
+        match = key == key_found;
+        return Status::OK();
+    }
+
+    Status _read_full_key(segment_v2::rowid_t rid, Slice* key) {
+        RETURN_IF_ERROR(_iter->seek_to_ordinal(rid));
+        size_t num_to_read = 1;
+        RETURN_IF_ERROR(_iter->next_batch(&num_to_read, _column));
+        DCHECK(num_to_read == 1);
+        *key = _column->get_data_at(0).to_slice();
+        return Status::OK();
+    }
+
+    std::unique_ptr<segment_v2::IndexedColumnIterator> _iter;
+    vectorized::MutableColumnPtr _column;
+    bool seeked {false};
+    segment_v2::rowid_t current_ordinal;
+    const PrimaryKeyIndexReader* _reader;
 };
 
 } // namespace doris

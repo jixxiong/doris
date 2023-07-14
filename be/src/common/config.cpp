@@ -1032,6 +1032,7 @@ DEFINE_Int32(rocksdb_max_write_buffer_number, "5");
 
 DEFINE_Bool(allow_invalid_decimalv2_literal, "false");
 DEFINE_mInt64(kerberos_expiration_time_seconds, "43200");
+DEFINE_Bool(enable_hash, "true");
 
 #ifdef BE_TEST
 // test s3

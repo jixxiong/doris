@@ -149,6 +149,7 @@ public:
         duration_ns += stat.duration_ns;
         sort_times += stat.sort_times;
         agg_times += stat.agg_times;
+        lookup_ns += stat.lookup_ns;
 
         return *this;
     }
@@ -161,6 +162,7 @@ public:
     int64_t duration_ns = 0;
     int64_t sort_times = 0;
     int64_t agg_times = 0;
+    int64_t lookup_ns = 0;
 };
 
 class MemTable {

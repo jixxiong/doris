@@ -50,6 +50,11 @@ Status PrimaryKeyIndexBuilder::init() {
     opt.fpp = 0.01;
     _bloom_filter_index_builder.reset(
             new segment_v2::PrimaryKeyBloomFilterIndexWriterImpl(opt, type_info));
+
+    // init cuckoo index writer
+    _cuckoo_index_builder = std::make_unique<segment_v2::CuckooIndexWriter>();
+    segment_v2::CuckooTableOptions opts;
+    RETURN_IF_ERROR(_cuckoo_index_builder->init(opts));
     return Status::OK();
 }
 
@@ -62,6 +67,7 @@ Status PrimaryKeyIndexBuilder::add_item(const Slice& key) {
     if (UNLIKELY(_num_rows == 0)) {
         _min_key.append(key.get_data(), key.get_size());
     }
+    RETURN_IF_ERROR(_cuckoo_index_builder->add_item(key));
     _max_key.clear();
     _max_key.append(key.get_data(), key.get_size());
     _num_rows++;
@@ -84,6 +90,7 @@ Status PrimaryKeyIndexBuilder::finalize(segment_v2::PrimaryKeyIndexMetaPB* meta)
     RETURN_IF_ERROR(
             _bloom_filter_index_builder->finish(_file_writer, meta->mutable_bloom_filter_index()));
     _disk_size += _file_writer->bytes_appended() - start_size;
+    RETURN_IF_ERROR(_cuckoo_index_builder->finish(_file_writer, meta->mutable_cuckoo_index()));
     return Status::OK();
 }
 
@@ -93,6 +100,14 @@ Status PrimaryKeyIndexReader::parse_index(io::FileReaderSPtr file_reader,
     _index_reader.reset(new segment_v2::IndexedColumnReader(file_reader, meta.primary_key_index()));
     _index_reader->set_is_pk_index(true);
     RETURN_IF_ERROR(_index_reader->load(!config::disable_storage_page_cache, false));
+
+    auto cuckoo_index_meta = meta.cuckoo_index();
+    _cuckoo_index_reader = std::make_unique<segment_v2::CuckooIndexReader>(
+            std::move(file_reader), &cuckoo_index_meta.cuckoo_index());
+    RETURN_IF_ERROR(_cuckoo_index_reader->load(!config::disable_storage_page_cache, false));
+    RETURN_IF_ERROR(_cuckoo_index_reader->read_cuckoo_table(&_cuckoo_table));
+
+    LOG(INFO) << fmt::format("Loaded Cuckoo Table of {} B", _cuckoo_table->size());
 
     _index_parsed = true;
     return Status::OK();
@@ -111,6 +126,10 @@ Status PrimaryKeyIndexReader::parse_bf(io::FileReaderSPtr file_reader,
     _bf_parsed = true;
 
     return Status::OK();
+}
+
+HashPrimaryKeyIndexIterator PrimaryKeyIndexReader::new_hash_iterator() const {
+    return HashPrimaryKeyIndexIterator(this);
 }
 
 } // namespace doris

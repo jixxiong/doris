@@ -73,6 +73,8 @@ class InvertedIndexIterator;
 
 using io::FileCacheManager;
 
+LookUpCounter LookUpCounter::counter {};
+
 Status Segment::open(io::FileSystemSPtr fs, const std::string& path, uint32_t segment_id,
                      RowsetId rowset_id, TabletSchemaSPtr tablet_schema,
                      const io::FileReaderOptions& reader_options,
@@ -366,9 +368,25 @@ Status Segment::lookup_row_key(const Slice& key, bool with_seq_col, RowLocation*
             Slice(key.get_data(), key.get_size() - (with_seq_col ? seq_col_length : 0));
 
     DCHECK(_pk_index_reader != nullptr);
-    if (!_pk_index_reader->check_present(key_without_seq)) {
-        return Status::NotFound("Can't find key in the segment");
+
+    if (LIKELY(!_pk_index_reader->check_present(key_without_seq))) {
+        LookUpCounter::get_counter()->bloom_false_count += 1;
+        return Status::NotFound("");
     }
+    LookUpCounter::get_counter()->bloom_true_count += 1;
+
+    if (config::enable_hash && (!with_seq_col || seq_col_length == 0)) {
+        // use cuckoo filter to check existance
+        auto hash_iter = _pk_index_reader->new_hash_iterator();
+        auto st = hash_iter.seek_at(key);
+        if (st.ok()) {
+            row_location->row_id = hash_iter.get_current_ordinal();
+            row_location->segment_id = _segment_id;
+            row_location->rowset_id = _rowset_id;
+        }
+        return st;
+    }
+
     bool exact_match = false;
     std::unique_ptr<segment_v2::IndexedColumnIterator> index_iterator;
     RETURN_IF_ERROR(_pk_index_reader->new_iterator(&index_iterator));
@@ -412,7 +430,6 @@ Status Segment::lookup_row_key(const Slice& key, bool with_seq_col, RowLocation*
             return Status::AlreadyExist("key with higher sequence id exists");
         }
     }
-
     return Status::OK();
 }
 

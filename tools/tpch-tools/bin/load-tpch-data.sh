@@ -160,6 +160,8 @@ function load_lineitem() {
     curl --location-trusted -u "${USER}":"${PASSWORD}" -H "column_separator:|" \
         -H "columns: l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice, l_discount, l_tax, l_returnflag,l_linestatus, l_shipdate,l_commitdate,l_receiptdate,l_shipinstruct,l_shipmode,l_comment,temp" \
         -T "$*" http://"${FE_HOST}":"${FE_HTTP_PORT}"/api/"${DB}"/lineitem/_stream_load \
+        -H "enable_profile: true" \
+        -H "enable_stream_load_profile_log: true" \
         -x ""
 }
 
@@ -189,7 +191,8 @@ for ((i = 1; i <= PARALLEL; i++)); do
 done
 
 date
-for file in "${TPCH_DATA_DIR}"/lineitem.tbl.10; do
+
+for file in "${TPCH_DATA_DIR}"/lineitem.tbl.1; do
     # 领取令牌, 即从fd3中读取行, 每次一行
     # 对管道，读一行便少一行，每次只能读取一行
     # 所有行读取完毕, 执行挂起, 直到管道再次有可读行
@@ -200,6 +203,14 @@ for file in "${TPCH_DATA_DIR}"/lineitem.tbl.10; do
     load_lineitem "${file}"
     echo "----loaded ${file}"
     sleep 2
+    # # 要批量执行的命令放在大括号内, 后台运行
+    # load_lineitem "${file}"
+    # echo "----loaded ${file}"
+    # sleep 2
+    # # 要批量执行的命令放在大括号内, 后台运行
+    # load_lineitem "${file}"
+    # echo "----loaded ${file}"
+    # sleep 2
     # 归还令牌, 即进程结束后，再写入一行，使挂起的循环继续执行
     echo >&3
 done

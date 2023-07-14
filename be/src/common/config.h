@@ -1058,6 +1058,7 @@ DECLARE_mBool(allow_invalid_decimalv2_literal);
 // If a hdfs filesytem with kerberos authentication live longer
 // than this time, it will be expired.
 DECLARE_mInt64(kerberos_expiration_time_seconds);
+DECLARE_Bool(enable_hash);
 
 #ifdef BE_TEST
 // test s3

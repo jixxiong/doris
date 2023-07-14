@@ -69,6 +69,22 @@ using SegmentSharedPtr = std::shared_ptr<Segment>;
 // NOTE: This segment is used to a specified TabletSchema, when TabletSchema
 // is changed, this segment can not be used any more. For example, after a schema
 // change finished, client should disable all cached Segment for old TabletSchema.
+struct LookUpCounter {
+    void show() {
+        LOG(INFO) << fmt::format("Look Up Counter: true: {}, false: {}", bloom_true_count,
+                                 bloom_false_count);
+        reset();
+    }
+    void reset() {
+        bloom_false_count = 0;
+        bloom_true_count = 0;
+    }
+    static LookUpCounter* get_counter() { return &counter; }
+    static LookUpCounter counter;
+    uint64_t bloom_true_count {0};
+    uint64_t bloom_false_count {0};
+};
+
 class Segment : public std::enable_shared_from_this<Segment> {
 public:
     static Status open(io::FileSystemSPtr fs, const std::string& path, uint32_t segment_id,

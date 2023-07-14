@@ -171,6 +171,8 @@ message PrimaryKeyIndexMetaPB {
 
     optional bytes min_key = 3;
     optional bytes max_key = 4;
+
+    optional ColumnIndexMetaPB cuckoo_index = 5;
 }
 
 message SegmentFooterPB {
@@ -225,6 +227,12 @@ enum ColumnIndexTypePB {
     ZONE_MAP_INDEX = 2;
     BITMAP_INDEX = 3;
     BLOOM_FILTER_INDEX = 4;
+    CUCKOO_INDEX = 5;
+}
+
+message CuckooIndexPB {
+    optional IndexedColumnMetaPB cuckoo_index = 1;
+    optional uint64 num_layers = 2;
 }
 
 message ColumnIndexMetaPB {
@@ -233,6 +241,7 @@ message ColumnIndexMetaPB {
     optional ZoneMapIndexPB zone_map_index = 8;
     optional BitmapIndexPB bitmap_index = 9;
     optional BloomFilterIndexPB bloom_filter_index = 10;
+    optional CuckooIndexPB cuckoo_index = 11;
 }
 
 message OrdinalIndexPB {
