@@ -1052,6 +1052,8 @@ DEFINE_mBool(enable_window_funnel_function_v2, "false");
 DEFINE_Bool(enable_hdfs_hedged_read, "false");
 DEFINE_Int32(hdfs_hedged_read_thread_num, "128");
 DEFINE_Int32(hdfs_hedged_read_threshold_time, "500");
+// minium rows required to use merge primary key iterator for calculating delete-bitmap
+DEFINE_Int64(min_rows_to_use_merge_pk_iterator_for_delete_bitmap, "50000000");
 
 #ifdef BE_TEST
 // test s3

@@ -1108,6 +1108,8 @@ DECLARE_Int32(hdfs_hedged_read_thread_num);
 // the threshold of doing hedged read, for "dfs.client.hedged.read.threshold.millis"
 // Maybe overwritten by the value specified when creating catalog
 DECLARE_Int32(hdfs_hedged_read_threshold_time);
+// minium rows required to use merge primary key iterator for calculating delete-bitmap
+DECLARE_Int64(min_rows_to_use_merge_pk_iterator_for_delete_bitmap);
 
 #ifdef BE_TEST
 // test s3
